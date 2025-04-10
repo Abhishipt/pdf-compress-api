@@ -53,16 +53,20 @@ def compress_pdf():
         }.get(level, '/ebook')
 
         cmd = [
-            'gs',
-            '-sDEVICE=pdfwrite',
-            '-dCompatibilityLevel=1.4',
-            '-dPDFSETTINGS=' + quality,
-            '-dNOPAUSE',
-            '-dQUIET',
-            '-dBATCH',
-            f'-sOutputFile={output_path}',
-            input_path
-        ]
+    'gs',
+    '-sDEVICE=pdfwrite',
+    '-dCompatibilityLevel=1.4',
+    '-dDownsampleColorImages=true',
+    '-dColorImageDownsampleType=/Bicubic',
+    '-dColorImageResolution=' + {'low': '72', 'medium': '120', 'high': '150'}.get(level, '120'),
+    '-dPDFSETTINGS=' + quality,
+    '-dNOPAUSE',
+    '-dQUIET',
+    '-dBATCH',
+    f'-sOutputFile={output_path}',
+    input_path
+]
+
 
         subprocess.run(cmd, check=True)
         schedule_file_deletion([input_path, output_path], delay=600)
