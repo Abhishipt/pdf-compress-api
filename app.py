@@ -10,75 +10,70 @@ app = Flask(__name__)
 CORS(app)
 
 UPLOAD_FOLDER = "uploads"
-COMPRESSED_FOLDER = "compressed"
+OUTPUT_FOLDER = "compressed"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-os.makedirs(COMPRESSED_FOLDER, exist_ok=True)
+os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
-DELETE_AFTER_SECONDS = 600  # 10 minutes
-
-
-def auto_delete_file(file_path, delay=DELETE_AFTER_SECONDS):
+def auto_delete_file(path, delay=600):
     def delete():
         time.sleep(delay)
-        try:
-            if os.path.exists(file_path):
-                os.remove(file_path)
-        except Exception as e:
-            print(f"Auto delete failed: {e}")
+        if os.path.exists(path):
+            try:
+                os.remove(path)
+                print(f"Deleted: {path}")
+            except Exception as e:
+                print(f"Error deleting {path}: {e}")
     threading.Thread(target=delete).start()
 
-
-def get_pdfsetting_from_level(level):
-    if level <= 25:
-        return "/prepress"
-    elif level <= 50:
-        return "/printer"
-    elif level <= 75:
-        return "/ebook"
-    else:
-        return "/screen"
-
-
-@app.route("/compress", methods=["POST"])
+@app.route('/compress', methods=['POST'])
 def compress_pdf():
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file uploaded'}), 400
+
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({'error': 'Empty filename'}), 400
+
     try:
-        file = request.files["file"]
-        compression_level = int(request.form.get("compression", 75))
+        level = int(request.form.get("compression", 75))
+    except ValueError:
+        level = 75
 
-        filename = secure_filename(file.filename)
-        input_pdf_path = os.path.join(UPLOAD_FOLDER, filename)
-        output_pdf_path = os.path.join(COMPRESSED_FOLDER, f"compressed_{filename}")
-        file.save(input_pdf_path)
+    # Map compression level to image resolution
+    resolution = max(50, min(300, int((level / 100) * 300)))
 
-        pdf_setting = get_pdfsetting_from_level(compression_level)
+    filename = secure_filename(file.filename)
+    input_path = os.path.join(UPLOAD_FOLDER, filename)
+    output_path = os.path.join(OUTPUT_FOLDER, f"compressed_{filename}")
+    file.save(input_path)
 
-        gs_command = [
-            "gs",
-            "-sDEVICE=pdfwrite",
-            "-dCompatibilityLevel=1.4",
-            f"-dPDFSETTINGS={pdf_setting}",
-            "-dNOPAUSE",
-            "-dQUIET",
-            "-dBATCH",
-            f"-sOutputFile={output_pdf_path}",
-            input_pdf_path
-        ]
+    gs_command = [
+        "gs",
+        "-sDEVICE=pdfwrite",
+        "-dCompatibilityLevel=1.4",
+        "-dDownsampleColorImages=true",
+        "-dColorImageDownsampleType=/Bicubic",
+        f"-dColorImageResolution={resolution}",
+        "-dNOPAUSE",
+        "-dQUIET",
+        "-dBATCH",
+        f"-sOutputFile={output_path}",
+        input_path
+    ]
 
+    try:
         subprocess.run(gs_command, check=True)
+    except subprocess.CalledProcessError:
+        return jsonify({'error': 'Compression failed'}), 500
 
-        auto_delete_file(input_pdf_path)
-        auto_delete_file(output_pdf_path)
+    auto_delete_file(input_path, delay=600)
+    auto_delete_file(output_path, delay=600)
 
-        return send_file(output_pdf_path, as_attachment=True)
+    return send_file(output_path, as_attachment=True)
 
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route("/ping", methods=["GET"])
+@app.route('/ping', methods=['GET'])
 def ping():
     return "pong", 200
-
 
 if __name__ == "__main__":
     app.run(debug=True)
