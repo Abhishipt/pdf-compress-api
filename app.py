@@ -57,14 +57,34 @@ def compress():
     output_path = os.path.join(UPLOAD_FOLDER, f"compressed_{file_id}.pdf")
     file.save(input_path)
 
-    if quality_level >= 80:
-        quality = 'ebook'
-    elif quality_level >= 50:
-        quality = 'screen'
-    else:
-        quality = 'default'
+    # Set DPI based on slider level (20–100%)
+if quality_level >= 80:
+    dpi = 72   # low quality → high compression
+elif quality_level >= 50:
+    dpi = 100  # medium quality → medium compression
+else:
+    dpi = 150  # high quality → low compression
 
-    success = compress_pdf_ghostscript(input_path, output_path, quality)
+def compress_pdf_ghostscript(input_path, output_path, dpi=100):
+    try:
+        subprocess.run([
+            'gs',
+            '-sDEVICE=pdfwrite',
+            '-dCompatibilityLevel=1.4',
+            '-dPDFSETTINGS=/screen',
+            '-dDownsampleColorImages=true',
+            f'-dColorImageResolution={dpi}',
+            '-dNOPAUSE',
+            '-dBATCH',
+            '-dQUIET',
+            f'-sOutputFile={output_path}',
+            input_path
+        ], check=True)
+        return True
+    except subprocess.CalledProcessError:
+        return False
+
+success = compress_pdf_ghostscript(input_path, output_path, dpi)
 
     if not success:
         print("❌ Ghostscript command failed.")
