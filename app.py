@@ -66,8 +66,14 @@ def compress():
     # ✅ Compress using Ghostscript
     success = compress_pdf_ghostscript(input_path, output_path, quality)
 
-    if not success or not os.path.exists(output_path):
-        return 'Compression failed', 500
+   if not success:
+    print("❌ Ghostscript command failed.")
+    return 'Compression failed: Ghostscript error', 500
+
+  if not os.path.exists(output_path):
+    print("❌ Output file not found.")
+    return 'Compression failed: Output file missing', 500
+
 
     # ✅ Clean up old files later
     delete_file_later(input_path)
