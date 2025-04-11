@@ -1,6 +1,6 @@
 from flask import Flask, request, send_file, jsonify
-from flask_cors import CORS
 from werkzeug.utils import secure_filename
+from flask_cors import CORS  # ✅ Add this
 import os
 import subprocess
 import uuid
@@ -8,7 +8,8 @@ import threading
 import time
 
 app = Flask(__name__)
-CORS(app)
+CORS(app)  # ✅ This allows frontend to access your API from another domain
+
 UPLOAD_FOLDER = 'uploads'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
