@@ -6,6 +6,7 @@ import subprocess
 import uuid
 import threading
 import time
+import fitz  # PyMuPDF
 
 app = Flask(__name__)
 CORS(app)
@@ -13,7 +14,7 @@ CORS(app)
 UPLOAD_FOLDER = 'uploads'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-# Auto-delete files after 10 minutes
+# 🔁 Auto-delete any file after 10 minutes
 def delete_file_later(path, delay=600):
     def remove():
         time.sleep(delay)
@@ -21,16 +22,30 @@ def delete_file_later(path, delay=600):
             os.remove(path)
     threading.Thread(target=remove).start()
 
-# Keep-alive route
+# ✅ Keep API alive
 @app.route('/')
 def home():
-    return jsonify({'status': 'PDF Compression API is alive 🔥'}), 200
+    return jsonify({'status': 'Smart PDF Compressor API is alive ⚙️'}), 200
+
+# ✅ Detect whether PDF is scanned or text-based
+def is_scanned_pdf(pdf_path):
+    try:
+        doc = fitz.open(pdf_path)
+        image_pages = 0
+        for page in doc:
+            text = page.get_text()
+            images = page.get_images(full=True)
+            if not text.strip() and images:
+                image_pages += 1
+        doc.close()
+        return image_pages >= len(doc) / 2  # scanned = mostly images
+    except Exception as e:
+        print("⚠️ Detection error:", e)
+        return False  # fallback to text-based
 
 @app.route('/compress', methods=['POST'])
 def compress():
     file = request.files.get('file')
-    compression_type = request.form.get('level', 'medium').lower()
-
     if not file:
         return 'No file uploaded', 400
 
@@ -40,13 +55,10 @@ def compress():
     output_path = os.path.join(UPLOAD_FOLDER, f"compressed_{file_id}.pdf")
     file.save(input_path)
 
-    # Set custom Ghostscript parameters based on level
-    if compression_type == "high":
-        dpi = 72
-    elif compression_type == "medium":
-        dpi = 100
-    else:  # low
-        dpi = 150
+    # 🧠 Smart detection
+    scanned = is_scanned_pdf(input_path)
+    dpi = 72 if scanned else 100
+    print(f"📘 PDF Type Detected: {'Scanned' if scanned else 'Text-based'} — Using DPI {dpi}")
 
     try:
         subprocess.run([
@@ -79,7 +91,6 @@ def compress():
         return 'Compression failed: Ghostscript error', 500
 
     if not os.path.exists(output_path):
-        print("❌ Output file not found.")
         return 'Compression failed: Output file missing', 500
 
     delete_file_later(input_path)
