@@ -41,12 +41,12 @@ def compress():
     file.save(input_path)
 
     # Set DPI based on selected compression type
-    if compression_type == "high":
-        dpi = 150
-    elif compression_type == "medium":
-        dpi = 100
-    else:
-        dpi = 72  # low compression = high reduction
+   if compression_type == "high":    # High compression = max reduction
+    dpi = 72
+elif compression_type == "medium":
+    dpi = 100
+else:  # low = retain more quality
+    dpi = 150
 
     try:
         subprocess.run([
