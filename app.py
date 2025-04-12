@@ -57,7 +57,7 @@ def compress():
 
     # 🧠 Smart detection
     scanned = is_scanned_pdf(input_path)
-    dpi = 72 if scanned else 100
+    dpi = 72 if scanned else 150
     print(f"📘 PDF Type Detected: {'Scanned' if scanned else 'Text-based'} — Using DPI {dpi}")
 
     try:
