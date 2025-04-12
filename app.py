@@ -40,13 +40,13 @@ def compress():
     output_path = os.path.join(UPLOAD_FOLDER, f"compressed_{file_id}.pdf")
     file.save(input_path)
 
-    # Set DPI based on selected compression type
-   if compression_type == "high":    # High compression = max reduction
-    dpi = 72
-elif compression_type == "medium":
-    dpi = 100
-else:  # low = retain more quality
-    dpi = 150
+    # ✅ FIXED indentation block
+    if compression_type == "high":
+        dpi = 72
+    elif compression_type == "medium":
+        dpi = 100
+    else:
+        dpi = 150
 
     try:
         subprocess.run([
