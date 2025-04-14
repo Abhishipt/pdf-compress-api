@@ -14,7 +14,7 @@ UPLOAD_FOLDER = 'uploads'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 # Auto-delete after 10 minutes
-def delete_file_later(path, delay=600):
+def delete_file_later(path, delay=60):
     def remove():
         time.sleep(delay)
         if os.path.exists(path):
