@@ -6,7 +6,7 @@ import subprocess
 import uuid
 import threading
 import time
-import fitz  # PyMuPDF for fast compression fallback
+import fitz  # PyMuPDF
 
 app = Flask(__name__)
 CORS(app)
@@ -14,9 +14,8 @@ CORS(app)
 UPLOAD_FOLDER = 'uploads'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-
 # ==========================================================
-# 🔁 Auto delete files after 180 seconds
+# Auto delete after 180 seconds
 # ==========================================================
 def delete_file_later(path, delay=180):
     def remove():
@@ -24,29 +23,39 @@ def delete_file_later(path, delay=180):
         if os.path.exists(path):
             try:
                 os.remove(path)
-                print(f"🗑️ Deleted temporary file: {path}")
+                print(f"🗑️ Deleted: {path}")
             except Exception as e:
-                print(f"⚠️ Failed to delete file {path}: {e}")
+                print(f"⚠️ Delete failed: {e}")
     threading.Thread(target=remove, daemon=True).start()
 
 
 # ==========================================================
-# 🧠 Helper: PyMuPDF fallback compression
+# PyMuPDF recompression (real re-encoding)
 # ==========================================================
-def compress_with_pymupdf(input_path, output_path):
+def compress_with_pymupdf(input_path, output_path, quality=50):
     try:
         pdf = fitz.open(input_path)
-        pdf.save(output_path, deflate=True, garbage=4, clean=True, incremental=False)
+        for page in pdf:
+            images = page.get_images(full=True)
+            for img_index, img in enumerate(images):
+                xref = img[0]
+                pix = fitz.Pixmap(pdf, xref)
+                if pix.n > 4:
+                    pix = fitz.Pixmap(fitz.csRGB, pix)
+                pix.save(f"temp_img_{xref}.jpg", quality=quality)
+                pdf.update_image(xref, f"temp_img_{xref}.jpg")
+                os.remove(f"temp_img_{xref}.jpg")
+        pdf.save(output_path, garbage=4, deflate=True, clean=True)
         pdf.close()
-        print("⚡ PyMuPDF fallback compression completed.")
+        print("✅ PyMuPDF recompression completed.")
         return True
     except Exception as e:
-        print(f"❌ PyMuPDF compression failed: {e}")
+        print(f"❌ PyMuPDF failed: {e}")
         return False
 
 
 # ==========================================================
-# 🧩 Route 1: Ghostscript-based compression
+# Ghostscript aggressive compression
 # ==========================================================
 @app.route('/compress', methods=['POST'])
 def compress():
@@ -62,103 +71,68 @@ def compress():
 
     input_path = os.path.join(UPLOAD_FOLDER, f"{file_id}_{original_name}{file_ext}")
     output_path = os.path.join(UPLOAD_FOLDER, f"{original_name}_tools_subidha.pdf")
-
     file.save(input_path)
+
     print(f"📥 Uploaded: {file.filename}")
 
-    file_size = os.path.getsize(input_path)
-    print(f"📦 Input file size: {file_size/1024/1024:.2f} MB")
-
-    # Auto fallback for large PDFs (>5 MB)
-    if file_size > 5 * 1024 * 1024:
-        print("⚡ Large file detected → using PyMuPDF fallback")
-        success = compress_with_pymupdf(input_path, output_path)
-        if not success:
-            return jsonify({"error": "Fast compression failed"}), 500
-        delete_file_later(input_path)
-        delete_file_later(output_path)
-        return send_file(
-            output_path,
-            as_attachment=True,
-            download_name=f"{original_name}_tools_subidha.pdf",
-            mimetype='application/pdf'
-        )
-
-    # Compression settings
+    # Determine compression settings
     settings = {
-        "high": {"dpi": 72, "pdfset": "/screen"},
-        "medium": {"dpi": 95, "pdfset": "/ebook"},
-        "low": {"dpi": 135, "pdfset": "/printer"}
+        "high": {"dpi": 72, "quality": 40},
+        "medium": {"dpi": 95, "quality": 55},
+        "low": {"dpi": 135, "quality": 70}
     }
     level = settings.get(compression_type, settings["medium"])
 
-    # 🔧 Updated Ghostscript compression command
+    # Ghostscript command with aggressive recompression
+    gs_cmd = [
+        'gs',
+        '-sDEVICE=pdfwrite',
+        '-dCompatibilityLevel=1.4',
+        '-dPDFSETTINGS=/default',
+        '-dNOPAUSE',
+        '-dQUIET',
+        '-dBATCH',
+        '-dDetectDuplicateImages=true',
+        '-dCompressFonts=true',
+        '-dSubsetFonts=true',
+        '-dEmbedAllFonts=true',
+        '-dColorImageDownsampleType=/Bicubic',
+        '-dGrayImageDownsampleType=/Bicubic',
+        '-dMonoImageDownsampleType=/Subsample',
+        '-dDownsampleColorImages=true',
+        '-dDownsampleGrayImages=true',
+        '-dDownsampleMonoImages=true',
+        f'-dColorImageResolution={level["dpi"]}',
+        f'-dGrayImageResolution={level["dpi"]}',
+        f'-dMonoImageResolution={level["dpi"]}',
+        f'-dJPEGQ={level["quality"]}',
+        '-dAutoRotatePages=/None',
+        '-dColorConversionStrategy=/sRGB',
+        f'-sOutputFile={output_path}',
+        input_path
+    ]
+
     try:
-        subprocess.run([
-            'gs',
-            '-sDEVICE=pdfwrite',
-            '-dCompatibilityLevel=1.4',
-            '-dNOPAUSE',
-            '-dBATCH',
-            '-dQUIET',
-
-            # ✅ Improved image compression and encoding
-            '-dDownsampleColorImages=true',
-            '-dDownsampleGrayImages=true',
-            '-dDownsampleMonoImages=true',
-            '-dEncodeColorImages=true',
-            '-dEncodeGrayImages=true',
-            '-dEncodeMonoImages=true',
-            '-dColorImageDownsampleType=/Average',
-            '-dGrayImageDownsampleType=/Average',
-            '-dMonoImageDownsampleType=/Subsample',
-            '-dJPEGQ=60',  # quality 0–100 (lower = smaller size)
-
-            # ✅ Resolution settings
-            f'-dColorImageResolution={level["dpi"]}',
-            f'-dGrayImageResolution={level["dpi"]}',
-            f'-dMonoImageResolution={level["dpi"]}',
-
-            # ✅ Font and metadata compression
-            '-dCompressFonts=true',
-            '-dSubsetFonts=true',
-            '-dEmbedAllFonts=true',
-            '-dDetectDuplicateImages=true',
-
-            # ✅ Color handling and optimization
-            '-dColorConversionStrategy=/sRGB',
-            '-dProcessColorModel=/DeviceRGB',
-            '-sColorConversionStrategy=RGB',
-            '-dAutoRotatePages=/None',
-
-            # ✅ Output
-            f'-sOutputFile={output_path}',
-            input_path
-        ], check=True)
+        subprocess.run(gs_cmd, check=True)
     except subprocess.CalledProcessError as e:
-        print("❌ Ghostscript compression failed:", e)
-        return jsonify({"error": "Compression failed"}), 500
+        print("❌ Ghostscript failed:", e)
+        # fallback to PyMuPDF recompression
+        compress_with_pymupdf(input_path, output_path, quality=50)
 
-    # ✅ Verify result
     if not os.path.exists(output_path):
         return jsonify({"error": "Output file missing"}), 500
 
     original_size = os.path.getsize(input_path)
     compressed_size = os.path.getsize(output_path)
-    print(f"📊 Ghostscript compression: {original_size/1024:.1f} KB → {compressed_size/1024:.1f} KB")
+    ratio = 100 - (compressed_size / original_size * 100)
+    print(f"📊 Compressed {original_size/1024:.1f} KB → {compressed_size/1024:.1f} KB ({ratio:.1f}% smaller)")
 
     delete_file_later(input_path)
     delete_file_later(output_path)
 
-    # If compression ineffective, return original file
-    if compressed_size > original_size * 0.98:
-        print("⚠️ Compression ineffective, returning original file.")
-        return send_file(
-            input_path,
-            as_attachment=True,
-            download_name=f"{original_name}_tools_subidha.pdf",
-            mimetype='application/pdf'
-        )
+    if compressed_size >= original_size:
+        print("⚠️ Compression ineffective — returning PyMuPDF output")
+        compress_with_pymupdf(input_path, output_path, quality=50)
 
     return send_file(
         output_path,
@@ -169,7 +143,7 @@ def compress():
 
 
 # ==========================================================
-# 🧩 Route 2: Manual Fast Compression (PyMuPDF only)
+# Fast Route — PyMuPDF only
 # ==========================================================
 @app.route('/compress_fast', methods=['POST'])
 def compress_fast():
@@ -178,18 +152,11 @@ def compress_fast():
         return jsonify({"error": "No file uploaded"}), 400
 
     original_name = os.path.splitext(secure_filename(file.filename))[0]
-    file_ext = ".pdf"
-    file_id = str(uuid.uuid4())
-
-    input_path = os.path.join(UPLOAD_FOLDER, f"{file_id}_{original_name}{file_ext}")
+    input_path = os.path.join(UPLOAD_FOLDER, f"{uuid.uuid4()}_{original_name}.pdf")
     output_path = os.path.join(UPLOAD_FOLDER, f"{original_name}_tools_subidha.pdf")
 
     file.save(input_path)
-    print(f"⚡ Fast compression triggered for: {file.filename}")
-
-    success = compress_with_pymupdf(input_path, output_path)
-    if not success:
-        return jsonify({"error": "Fast compression failed"}), 500
+    compress_with_pymupdf(input_path, output_path, quality=50)
 
     delete_file_later(input_path)
     delete_file_later(output_path)
@@ -203,21 +170,20 @@ def compress_fast():
 
 
 # ==========================================================
-# 🩺 Keep Alive & Health Routes
+# Health Check
 # ==========================================================
-@app.route('/', methods=['GET'])
+@app.route('/')
 def home():
     return jsonify({
         "status": "OK",
-        "message": "PDF Compressor API Active",
+        "message": "PDF Compressor API running",
         "routes": ["/compress", "/compress_fast"]
-    }), 200
+    })
 
-
-@app.route('/ping', methods=['GET'])
+@app.route('/ping')
 def ping():
-    return jsonify({"alive": True}), 200
+    return jsonify({"alive": True})
 
 
-if __name__ == '__main__':
-    app.run(debug=False, host='0.0.0.0', port=5000)
+if __name__ == "__main__":
+    app.run(debug=False, host="0.0.0.0", port=5000)
