@@ -103,5 +103,77 @@ def compress():
         mimetype='application/pdf'
     )
 
+@app.route('/compress_fast', methods=['POST'])
+def compress_fast():
+    file = request.files.get('file')
+
+    if not file:
+        return jsonify({"error": "No file uploaded"}), 400
+
+    original_name = os.path.splitext(secure_filename(file.filename))[0]
+    file_ext = ".pdf"
+    file_id = str(uuid.uuid4())
+
+    input_path = os.path.join(UPLOAD_FOLDER, f"{file_id}_{original_name}{file_ext}")
+    output_path = os.path.join(UPLOAD_FOLDER, f"{original_name}_tools_subidha.pdf")
+
+    file.save(input_path)
+    print(f"⚡ Fast compression started for: {file.filename}")
+
+    try:
+        pdf = fitz.open(input_path)
+        # Fast compression using garbage collection and deflate streams
+        pdf.save(output_path, deflate=True, garbage=4, clean=True, incremental=False)
+        pdf.close()
+    except Exception as e:
+        print("❌ PyMuPDF compression failed:", e)
+        return jsonify({"error": "Fast compression failed"}), 500
+
+    if not os.path.exists(output_path):
+        return jsonify({"error": "Output file missing"}), 500
+
+    original_size = os.path.getsize(input_path)
+    compressed_size = os.path.getsize(output_path)
+    print(f"📊 Fast compression: {original_size/1024:.1f} KB → {compressed_size/1024:.1f} KB")
+
+    delete_file_later(input_path)
+    delete_file_later(output_path)
+
+    # Return smaller file (or original if not effective)
+    if compressed_size > original_size * 0.98:
+        print("⚠️ Fast compression ineffective, returning original.")
+        return send_file(
+            input_path,
+            as_attachment=True,
+            download_name=f"{original_name}_tools_subidha.pdf",
+            mimetype='application/pdf'
+        )
+
+    return send_file(
+        output_path,
+        as_attachment=True,
+        download_name=f"{original_name}_tools_subidha.pdf",
+        mimetype='application/pdf'
+    )
+
+
+# ==========================================================
+#  KEEP-ALIVE + HOME ENDPOINTS
+# ==========================================================
+@app.route('/', methods=['GET'])
+def home():
+    return jsonify({
+        "status": "OK",
+        "message": "PDF Compressor API (Ghostscript + PyMuPDF)",
+        "routes": ["/compress", "/compress_fast"]
+    }), 200
+
+
+@app.route('/ping', methods=['GET'])
+def ping():
+    return jsonify({"alive": True}), 200
+
+
 if __name__ == '__main__':
-    app.run(debug=False)
+    app.run(debug=False, host="0.0.0.0", port=5000)
+    
