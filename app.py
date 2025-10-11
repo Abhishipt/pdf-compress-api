@@ -7,6 +7,7 @@ import uuid
 import threading
 import time
 import fitz  # PyMuPDF
+import pikepdf  # for fast compression
 
 app = Flask(__name__)
 CORS(app)
@@ -55,7 +56,22 @@ def compress_with_pymupdf(input_path, output_path, quality=50):
 
 
 # ==========================================================
-# Ghostscript aggressive compression
+# PikePDF - Lightweight Fast Compression
+# ==========================================================
+def compress_with_pikepdf(input_path, output_path):
+    try:
+        pdf = pikepdf.open(input_path)
+        pdf.save(output_path, optimize_streams=True, recompress_flate=True)
+        pdf.close()
+        print("⚡ PikePDF compression completed.")
+        return True
+    except Exception as e:
+        print(f"❌ PikePDF failed: {e}")
+        return False
+
+
+# ==========================================================
+# Hybrid Compression Route (Ghostscript + PikePDF)
 # ==========================================================
 @app.route('/compress', methods=['POST'])
 def compress():
@@ -73,9 +89,10 @@ def compress():
     output_path = os.path.join(UPLOAD_FOLDER, f"{original_name}_tools_subidha.pdf")
     file.save(input_path)
 
-    print(f"📥 Uploaded: {file.filename}")
+    file_size = os.path.getsize(input_path) / 1024 / 1024
+    print(f"📥 Uploaded: {file.filename} ({file_size:.2f} MB)")
 
-    # Determine compression settings
+    # Compression settings
     settings = {
         "high": {"dpi": 72, "quality": 40},
         "medium": {"dpi": 95, "quality": 55},
@@ -83,56 +100,62 @@ def compress():
     }
     level = settings.get(compression_type, settings["medium"])
 
-    # Ghostscript command with aggressive recompression
-    gs_cmd = [
-        'gs',
-        '-sDEVICE=pdfwrite',
-        '-dCompatibilityLevel=1.4',
-        '-dPDFSETTINGS=/default',
-        '-dNOPAUSE',
-        '-dQUIET',
-        '-dBATCH',
-        '-dDetectDuplicateImages=true',
-        '-dCompressFonts=true',
-        '-dSubsetFonts=true',
-        '-dEmbedAllFonts=true',
-        '-dColorImageDownsampleType=/Bicubic',
-        '-dGrayImageDownsampleType=/Bicubic',
-        '-dMonoImageDownsampleType=/Subsample',
-        '-dDownsampleColorImages=true',
-        '-dDownsampleGrayImages=true',
-        '-dDownsampleMonoImages=true',
-        f'-dColorImageResolution={level["dpi"]}',
-        f'-dGrayImageResolution={level["dpi"]}',
-        f'-dMonoImageResolution={level["dpi"]}',
-        f'-dJPEGQ={level["quality"]}',
-        '-dAutoRotatePages=/None',
-        '-dColorConversionStrategy=/sRGB',
-        f'-sOutputFile={output_path}',
-        input_path
-    ]
+    # ==========================================================
+    # Hybrid logic: big files → PikePDF, small → Ghostscript
+    # ==========================================================
+    if file_size > 4:
+        print("⚡ Using PikePDF fast compression for large file")
+        success = compress_with_pikepdf(input_path, output_path)
+        if not success:
+            print("⚠️ PikePDF failed, falling back to PyMuPDF")
+            compress_with_pymupdf(input_path, output_path, quality=50)
+    else:
+        print("🧩 Using Ghostscript for small/medium file")
+        gs_cmd = [
+            'gs',
+            '-sDEVICE=pdfwrite',
+            '-dCompatibilityLevel=1.4',
+            '-dPDFSETTINGS=/default',
+            '-dNOPAUSE',
+            '-dQUIET',
+            '-dBATCH',
+            '-dDetectDuplicateImages=true',
+            '-dCompressFonts=true',
+            '-dSubsetFonts=true',
+            '-dEmbedAllFonts=true',
+            '-dColorImageDownsampleType=/Bicubic',
+            '-dGrayImageDownsampleType=/Bicubic',
+            '-dMonoImageDownsampleType=/Subsample',
+            '-dDownsampleColorImages=true',
+            '-dDownsampleGrayImages=true',
+            '-dDownsampleMonoImages=true',
+            f'-dColorImageResolution={level["dpi"]}',
+            f'-dGrayImageResolution={level["dpi"]}',
+            f'-dMonoImageResolution={level["dpi"]}',
+            f'-dJPEGQ={level["quality"]}',
+            '-dAutoRotatePages=/None',
+            '-dColorConversionStrategy=/sRGB',
+            f'-sOutputFile={output_path}',
+            input_path
+        ]
 
-    try:
-        subprocess.run(gs_cmd, check=True)
-    except subprocess.CalledProcessError as e:
-        print("❌ Ghostscript failed:", e)
-        # fallback to PyMuPDF recompression
-        compress_with_pymupdf(input_path, output_path, quality=50)
+        try:
+            subprocess.run(gs_cmd, check=True)
+        except subprocess.CalledProcessError as e:
+            print("❌ Ghostscript failed:", e)
+            compress_with_pymupdf(input_path, output_path, quality=50)
 
     if not os.path.exists(output_path):
         return jsonify({"error": "Output file missing"}), 500
 
+    # Compare sizes
     original_size = os.path.getsize(input_path)
     compressed_size = os.path.getsize(output_path)
-    ratio = 100 - (compressed_size / original_size * 100)
-    print(f"📊 Compressed {original_size/1024:.1f} KB → {compressed_size/1024:.1f} KB ({ratio:.1f}% smaller)")
+    saved = 100 - (compressed_size / original_size * 100)
+    print(f"📊 Original: {original_size/1024:.1f} KB → Compressed: {compressed_size/1024:.1f} KB ({saved:.1f}% smaller)")
 
     delete_file_later(input_path)
     delete_file_later(output_path)
-
-    if compressed_size >= original_size:
-        print("⚠️ Compression ineffective — returning PyMuPDF output")
-        compress_with_pymupdf(input_path, output_path, quality=50)
 
     return send_file(
         output_path,
@@ -176,7 +199,7 @@ def compress_fast():
 def home():
     return jsonify({
         "status": "OK",
-        "message": "PDF Compressor API running",
+        "message": "PDF Compressor API running (Hybrid Mode)",
         "routes": ["/compress", "/compress_fast"]
     })
 
