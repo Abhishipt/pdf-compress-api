@@ -1,6 +1,5 @@
-Flask
-flask-cors
-PyMuPDF
-pikepdf
-gunicorn
-werkzeug
+Flask>=2.2
+flask-cors>=4.0
+PyMuPDF>=1.24
+pikepdf>=9.0
+gunicorn>=21.2
