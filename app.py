@@ -42,36 +42,56 @@ def compress():
     # 🔧 Set compression DPI dynamically
     settings = {
         "high": {"dpi": 72, "pdfset": "/screen"},
-        "medium": {"dpi": 100, "pdfset": "/ebook"},
-        "low": {"dpi": 150, "pdfset": "/printer"}
+        "medium": {"dpi": 95, "pdfset": "/ebook"},
+        "low": {"dpi": 135, "pdfset": "/printer"}
     }
     level = settings.get(compression_type, settings["medium"])
 
     try:
         subprocess.run([
-            'gs',
-            '-sDEVICE=pdfwrite',
-            '-dCompatibilityLevel=1.4',
-            f'-dPDFSETTINGS={level["pdfset"]}',
-            '-dColorImageDownsampleType=/Bicubic',
-            '-dGrayImageDownsampleType=/Bicubic',
-            '-dMonoImageDownsampleType=/Subsample',
-            '-dDownsampleColorImages=true',
-            '-dDownsampleGrayImages=true',
-            '-dDownsampleMonoImages=true',
-            f'-dColorImageResolution={level["dpi"]}',
-            f'-dGrayImageResolution={level["dpi"]}',
-            f'-dMonoImageResolution={level["dpi"]}',
-            '-dDetectDuplicateImages=true',
-            '-dCompressFonts=true',
-            '-dSubsetFonts=true',
-            '-dEmbedAllFonts=true',
-            '-dNOPAUSE',
-            '-dBATCH',
-            '-dQUIET',
-            f'-sOutputFile={output_path}',
-            input_path
-        ], check=True)
+    'gs',
+    '-sDEVICE=pdfwrite',
+    '-dCompatibilityLevel=1.4',
+
+    # ✅ Turn off automatic presets to control all settings manually
+    '-dNOPAUSE',
+    '-dBATCH',
+    '-dQUIET',
+
+    # ✅ Downsampling and re-encoding (stronger compression)
+    '-dDownsampleColorImages=true',
+    '-dDownsampleGrayImages=true',
+    '-dDownsampleMonoImages=true',
+    '-dEncodeColorImages=true',
+    '-dEncodeGrayImages=true',
+    '-dEncodeMonoImages=true',
+
+    # ✅ Use "Average" algorithm for smaller and smoother images
+    '-dColorImageDownsampleType=/Average',
+    '-dGrayImageDownsampleType=/Average',
+    '-dMonoImageDownsampleType=/Subsample',
+
+    # ✅ Set consistent output resolution (you can tweak this)
+    f'-dColorImageResolution={level["dpi"]}',
+    f'-dGrayImageResolution={level["dpi"]}',
+    f'-dMonoImageResolution={level["dpi"]}',
+
+    # ✅ Remove metadata, keep fonts compressed
+    '-dCompressFonts=true',
+    '-dSubsetFonts=true',
+    '-dEmbedAllFonts=true',
+    '-dDetectDuplicateImages=true',
+
+    # ✅ Force color model for uniform rendering
+    '-dColorConversionStrategy=/sRGB',
+    '-dProcessColorModel=/DeviceRGB',
+    '-sColorConversionStrategy=RGB',
+    '-dAutoRotatePages=/None',
+
+    # ✅ Output file
+    f'-sOutputFile={output_path}',
+    input_path
+], check=True)
     except subprocess.CalledProcessError as e:
         print("❌ Ghostscript failed:", e)
         return 'Compression failed: Ghostscript error', 500
