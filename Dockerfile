@@ -33,14 +33,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Copy dependencies dynamically
+# Copy dependencies and app files
 COPY --from=builder /install /usr/local/lib/python*/site-packages
 COPY . /app
 
 EXPOSE 5000
 
-# Health check
+# Add a startup log for Render debugging
+RUN echo "✅ Docker image built successfully. Ready to start Gunicorn."
+
+# Health check for Render
 HEALTHCHECK CMD curl --fail http://localhost:5000/ping || exit 1
 
-# Start Gunicorn
+# Start Gunicorn with your app
 CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "2", "--timeout", "120", "app:app"]
