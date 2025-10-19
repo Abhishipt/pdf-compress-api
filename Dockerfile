@@ -1,12 +1,11 @@
 # ==========================================================
-# Stage 1 — Build environment
+# Stage 1 — Build dependencies
 # ==========================================================
 FROM python:3.11-slim AS builder
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
-# Install Ghostscript and build tools
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     ghostscript \
@@ -16,7 +15,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 COPY requirements.txt .
 
-# Install Python dependencies to /install
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt --target=/install
 
@@ -28,7 +26,6 @@ FROM python:3.11-slim
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
-# Install Ghostscript & curl again for runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ghostscript \
     curl \
@@ -36,15 +33,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Copy dependencies and app source
-COPY --from=builder /install /usr/local/lib/python3.11/site-packages
+# Copy dependencies dynamically
+COPY --from=builder /install /usr/local/lib/python*/site-packages
 COPY . /app
 
-# Expose port
 EXPOSE 5000
 
-# Health check (Render will auto-restart if unhealthy)
+# Health check
 HEALTHCHECK CMD curl --fail http://localhost:5000/ping || exit 1
 
-# Start Gunicorn (2 workers for Render Free Tier)
+# Start Gunicorn
 CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "2", "--timeout", "120", "app:app"]
