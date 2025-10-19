@@ -207,7 +207,8 @@ def home():
 def ping():
     return jsonify({"alive": True})
 
-print("🚀 Starting PDF Compressor API (Hybrid Mode)...")
 if __name__ == "__main__":
+    print("🚀 Starting PDF Compressor API (Hybrid Mode)...")
     app.run(debug=False, host="0.0.0.0", port=5000)
+
     
