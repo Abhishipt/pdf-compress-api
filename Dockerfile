@@ -45,4 +45,4 @@ EXPOSE 5000
 HEALTHCHECK CMD curl --fail http://localhost:5000/ping || exit 1
 
 # Start Flask app with Gunicorn (2 workers = optimal for Render free tier)
-CMD ["gunicorn", "app:app", "--bind", "0.0.0.0:5000", "--workers", "2", "--timeout", "120"]
+CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "2", "--timeout", "120", "app:app"]
