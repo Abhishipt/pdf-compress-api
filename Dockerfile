@@ -1,49 +1,20 @@
-# ==========================================================
-# Stage 1 — Build dependencies
-# ==========================================================
-FROM python:3.11-slim AS builder
+# Use official Python image
+FROM python:3.10-slim
 
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
+# Install Ghostscript
+RUN apt-get update && apt-get install -y ghostscript
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    ghostscript \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
-
-WORKDIR /app
-COPY requirements.txt .
-
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt --target=/install
-
-# ==========================================================
-# Stage 2 — Runtime environment
-# ==========================================================
-FROM python:3.11-slim
-
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ghostscript \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
-
+# Set working directory
 WORKDIR /app
 
-# Copy dependencies and app files
-COPY --from=builder /install /usr/local/lib/python*/site-packages
-COPY . /app
+# Copy app files
+COPY . .
 
-EXPOSE 5000
+# Install dependencies
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Add a startup log for Render debugging
-RUN echo "✅ Docker image built successfully. Ready to start Gunicorn."
+# Expose the port
+EXPOSE 10000
 
-# Health check for Render
-HEALTHCHECK CMD curl --fail http://localhost:5000/ping || exit 1
-
-# Start Gunicorn with your app
-CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "2", "--timeout", "120", "app:app"]
+# Run the app with correct command
+CMD exec gunicorn --bind 0.0.0.0:10000 app:app
