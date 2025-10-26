@@ -7,9 +7,11 @@ import uuid
 import threading
 import time
 import fitz  # PyMuPDF
-import pikepdf  # for fast compression
+import pikepdf  # PDF optimization
 import tempfile
 import shutil
+import io
+from PIL import Image  # For image re-encoding
 
 app = Flask(__name__)
 CORS(app)
@@ -33,15 +35,15 @@ def delete_file_later(path, delay=180):
 
 
 # ==========================================================
-# PyMuPDF recompression (real re-encoding)
+# PyMuPDF recompression (via Pillow for compatibility)
 # ==========================================================
 def compress_with_pymupdf(input_path, output_path, quality=50):
     try:
         pdf = fitz.open(input_path)
-        # Save temp images into tempdir to avoid collisions
         tmpdir = tempfile.mkdtemp(prefix="pmupdf_")
         try:
-            for page in pdf:
+            for page_index in range(len(pdf)):
+                page = pdf[page_index]
                 images = page.get_images(full=True)
                 for img in images:
                     xref = img[0]
@@ -49,12 +51,17 @@ def compress_with_pymupdf(input_path, output_path, quality=50):
                         pix = fitz.Pixmap(pdf, xref)
                         if pix.n > 4:
                             pix = fitz.Pixmap(fitz.csRGB, pix)
-                        tmp_img_path = os.path.join(tmpdir, f"img_{xref}.jpg")
-                        pix.save(tmp_img_path, quality=quality)
-                        pdf.update_image(xref, tmp_img_path)
+                        # Convert Pixmap → PNG bytes → Pillow Image
+                        png_bytes = pix.tobytes("png")
                         pix = None
-                        if os.path.exists(tmp_img_path):
-                            os.remove(tmp_img_path)
+                        pil_img = Image.open(io.BytesIO(png_bytes))
+                        if pil_img.mode != "RGB":
+                            pil_img = pil_img.convert("RGB")
+                        buf = io.BytesIO()
+                        pil_img.save(buf, format="JPEG", quality=quality, optimize=True)
+                        buf.seek(0)
+                        pdf.update_image(xref, buf.read())
+                        buf.close()
                     except Exception as ie:
                         print(f"⚠️ PyMuPDF image conversion failed for xref {xref}: {ie}")
             pdf.save(output_path, garbage=4, deflate=True, clean=True)
@@ -69,13 +76,13 @@ def compress_with_pymupdf(input_path, output_path, quality=50):
 
 
 # ==========================================================
-# PikePDF - Lightweight Fast Compression
+# PikePDF - Lightweight Fast Compression (compatible version)
 # ==========================================================
 def compress_with_pikepdf(input_path, output_path):
     try:
         with pikepdf.open(input_path) as pdf:
-            pdf.save(output_path, optimize_streams=True, recompress_flate=True)
-        print("⚡ PikePDF compression completed.")
+            pdf.save(output_path)  # Compatible save method
+        print("⚡ PikePDF basic save completed.")
         return True
     except Exception as e:
         print(f"❌ PikePDF failed: {e}")
@@ -83,14 +90,14 @@ def compress_with_pikepdf(input_path, output_path):
 
 
 # ==========================================================
-# Helper: run Ghostscript with timeout and fallback logic
+# Run Ghostscript (fast + adaptive)
 # ==========================================================
-def run_ghostscript(input_path, output_path, dpi=95, jpeg_quality=55, timeout_sec=240):
+def run_ghostscript(input_path, output_path, dpi=95, jpeg_quality=55, timeout_sec=300, preset="/default"):
     gs_cmd = [
         'gs',
         '-sDEVICE=pdfwrite',
         '-dCompatibilityLevel=1.4',
-        '-dPDFSETTINGS=/default',
+        f'-dPDFSETTINGS={preset}',
         '-dNOPAUSE',
         '-dQUIET',
         '-dBATCH',
@@ -111,7 +118,6 @@ def run_ghostscript(input_path, output_path, dpi=95, jpeg_quality=55, timeout_se
         '-dAutoRotatePages=/None',
         '-dColorConversionStrategy=/sRGB',
         '-dProcessColorModel=/DeviceRGB',
-        '-dNumRenderingThreads=2',
         f'-sOutputFile={output_path}',
         input_path
     ]
@@ -135,7 +141,7 @@ def run_ghostscript(input_path, output_path, dpi=95, jpeg_quality=55, timeout_se
 
 
 # ==========================================================
-# Hybrid Compression Route (Ghostscript + PikePDF)
+# Hybrid Compression Route
 # ==========================================================
 @app.route('/compress', methods=['POST'])
 def compress():
@@ -165,10 +171,9 @@ def compress():
     }
     level = settings.get(compression_type, settings["medium"])
 
-    # Hybrid logic: large files -> pikepdf, else ghostscript.
-    # Lower threshold to 2 MB to reduce Render CPU/memory issues.
     try:
-        if file_size_mb > 2.0:
+        # Adaptive logic
+        if file_size_mb > 2.5:
             print("⚡ Using PikePDF fast compression for large file")
             ok = compress_with_pikepdf(input_path, output_path)
             if not ok:
@@ -177,12 +182,15 @@ def compress():
             method_used = "pikepdf" if ok else "pymupdf-fallback"
         else:
             print("🧩 Using Ghostscript for small/medium file")
+            # Adjust preset based on size
+            preset = "/screen" if file_size_mb > 1.5 else "/ebook"
             ok, err = run_ghostscript(
                 input_path,
                 output_path,
                 dpi=level["dpi"],
                 jpeg_quality=level["quality"],
-                timeout_sec=240
+                timeout_sec=300,
+                preset=preset
             )
             method_used = "ghostscript"
             if not ok:
@@ -194,34 +202,31 @@ def compress():
         return jsonify({"error": "Server error during compression"}), 500
 
     if not os.path.exists(output_path):
-        print("❌ Output missing after compression attempts, returning error.")
+        print("❌ Output missing after compression attempts.")
         delete_file_later(input_path)
         return jsonify({"error": "Output file missing"}), 500
 
-    # Compare sizes and optionally try alternative if no reduction
     original_size = file_size_bytes
     compressed_size = os.path.getsize(output_path)
     saved_pct = 100 - (compressed_size / original_size * 100)
     print(f"📊 Method: {method_used} → {original_size/1024:.1f} KB → {compressed_size/1024:.1f} KB ({saved_pct:.1f}% smaller)")
 
-    # If compressed is not smaller, try alternate algorithm before returning original
+    # If compression was ineffective, fallback to PyMuPDF
     if compressed_size >= original_size:
-        print("⚠️ Compression ineffective, trying alternative method (PyMuPDF)")
+        print("⚠️ Compression ineffective, trying PyMuPDF as alternative.")
         alt_ok = compress_with_pymupdf(input_path, output_path, quality=50)
         if alt_ok:
             compressed_size = os.path.getsize(output_path)
             saved_pct = 100 - (compressed_size / original_size * 100)
             print(f"📊 After alt: {original_size/1024:.1f} KB → {compressed_size/1024:.1f} KB ({saved_pct:.1f}% smaller)")
         else:
-            print("⚠️ Alternative also ineffective, will return original file.")
+            print("⚠️ Alternative also ineffective. Returning original.")
 
-    # Ensure cleanup scheduled
     delete_file_later(input_path)
     delete_file_later(output_path)
 
-    # If alt failed and compressed is >= original, return original
     if compressed_size >= original_size:
-        print("🔁 Returning original because compression didn't help.")
+        print("🔁 Returning original file (compression ineffective).")
         return send_file(
             input_path,
             as_attachment=True,
@@ -229,8 +234,6 @@ def compress():
             mimetype='application/pdf'
         )
 
-    # Successful compressed output
-    # (You can also return JSON metadata if you want; for now keep same behavior)
     return send_file(
         output_path,
         as_attachment=True,
@@ -277,9 +280,11 @@ def home():
         "routes": ["/compress", "/compress_fast"]
     })
 
+
 @app.route('/ping')
 def ping():
     return jsonify({"alive": True})
+
 
 if __name__ == "__main__":
     print("🚀 Starting PDF Compressor API (Hybrid Mode)...")
