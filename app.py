@@ -8,6 +8,8 @@ import threading
 import time
 import fitz  # PyMuPDF
 import pikepdf  # for fast compression
+import tempfile
+import shutil
 
 app = Flask(__name__)
 CORS(app)
@@ -26,7 +28,7 @@ def delete_file_later(path, delay=180):
                 os.remove(path)
                 print(f"🗑️ Deleted: {path}")
             except Exception as e:
-                print(f"⚠️ Delete failed: {e}")
+                print(f"⚠️ Failed deleting {path}: {e}")
     threading.Thread(target=remove, daemon=True).start()
 
 
@@ -36,18 +38,29 @@ def delete_file_later(path, delay=180):
 def compress_with_pymupdf(input_path, output_path, quality=50):
     try:
         pdf = fitz.open(input_path)
-        for page in pdf:
-            images = page.get_images(full=True)
-            for img_index, img in enumerate(images):
-                xref = img[0]
-                pix = fitz.Pixmap(pdf, xref)
-                if pix.n > 4:
-                    pix = fitz.Pixmap(fitz.csRGB, pix)
-                pix.save(f"temp_img_{xref}.jpg", quality=quality)
-                pdf.update_image(xref, f"temp_img_{xref}.jpg")
-                os.remove(f"temp_img_{xref}.jpg")
-        pdf.save(output_path, garbage=4, deflate=True, clean=True)
-        pdf.close()
+        # Save temp images into tempdir to avoid collisions
+        tmpdir = tempfile.mkdtemp(prefix="pmupdf_")
+        try:
+            for page in pdf:
+                images = page.get_images(full=True)
+                for img in images:
+                    xref = img[0]
+                    try:
+                        pix = fitz.Pixmap(pdf, xref)
+                        if pix.n > 4:
+                            pix = fitz.Pixmap(fitz.csRGB, pix)
+                        tmp_img_path = os.path.join(tmpdir, f"img_{xref}.jpg")
+                        pix.save(tmp_img_path, quality=quality)
+                        pdf.update_image(xref, tmp_img_path)
+                        pix = None
+                        if os.path.exists(tmp_img_path):
+                            os.remove(tmp_img_path)
+                    except Exception as ie:
+                        print(f"⚠️ PyMuPDF image conversion failed for xref {xref}: {ie}")
+            pdf.save(output_path, garbage=4, deflate=True, clean=True)
+        finally:
+            pdf.close()
+            shutil.rmtree(tmpdir, ignore_errors=True)
         print("✅ PyMuPDF recompression completed.")
         return True
     except Exception as e:
@@ -60,14 +73,65 @@ def compress_with_pymupdf(input_path, output_path, quality=50):
 # ==========================================================
 def compress_with_pikepdf(input_path, output_path):
     try:
-        pdf = pikepdf.open(input_path)
-        pdf.save(output_path, optimize_streams=True, recompress_flate=True)
-        pdf.close()
+        with pikepdf.open(input_path) as pdf:
+            pdf.save(output_path, optimize_streams=True, recompress_flate=True)
         print("⚡ PikePDF compression completed.")
         return True
     except Exception as e:
         print(f"❌ PikePDF failed: {e}")
         return False
+
+
+# ==========================================================
+# Helper: run Ghostscript with timeout and fallback logic
+# ==========================================================
+def run_ghostscript(input_path, output_path, dpi=95, jpeg_quality=55, timeout_sec=240):
+    gs_cmd = [
+        'gs',
+        '-sDEVICE=pdfwrite',
+        '-dCompatibilityLevel=1.4',
+        '-dPDFSETTINGS=/default',
+        '-dNOPAUSE',
+        '-dQUIET',
+        '-dBATCH',
+        '-dDetectDuplicateImages=true',
+        '-dCompressFonts=true',
+        '-dSubsetFonts=true',
+        '-dEmbedAllFonts=true',
+        '-dDownsampleColorImages=true',
+        '-dDownsampleGrayImages=true',
+        '-dDownsampleMonoImages=true',
+        '-dColorImageDownsampleType=/Average',
+        '-dGrayImageDownsampleType=/Average',
+        '-dMonoImageDownsampleType=/Subsample',
+        f'-dColorImageResolution={dpi}',
+        f'-dGrayImageResolution={dpi}',
+        f'-dMonoImageResolution={dpi}',
+        f'-dJPEGQ={jpeg_quality}',
+        '-dAutoRotatePages=/None',
+        '-dColorConversionStrategy=/sRGB',
+        '-dProcessColorModel=/DeviceRGB',
+        '-dNumRenderingThreads=2',
+        f'-sOutputFile={output_path}',
+        input_path
+    ]
+
+    try:
+        subprocess.run(gs_cmd, check=True, timeout=timeout_sec)
+        print("✅ Ghostscript finished without error.")
+        return True, None
+    except subprocess.TimeoutExpired:
+        msg = "Ghostscript timed out"
+        print("⚠️", msg)
+        return False, msg
+    except subprocess.CalledProcessError as e:
+        msg = f"Ghostscript error: {e}"
+        print("❌", msg)
+        return False, msg
+    except Exception as e:
+        msg = f"Ghostscript unexpected error: {e}"
+        print("❌", msg)
+        return False, msg
 
 
 # ==========================================================
@@ -89,8 +153,9 @@ def compress():
     output_path = os.path.join(UPLOAD_FOLDER, f"{original_name}_tools_subidha.pdf")
     file.save(input_path)
 
-    file_size = os.path.getsize(input_path) / 1024 / 1024
-    print(f"📥 Uploaded: {file.filename} ({file_size:.2f} MB)")
+    file_size_bytes = os.path.getsize(input_path)
+    file_size_mb = file_size_bytes / 1024 / 1024
+    print(f"📥 Uploaded: {file.filename} ({file_size_mb:.2f} MB)")
 
     # Compression settings
     settings = {
@@ -100,63 +165,72 @@ def compress():
     }
     level = settings.get(compression_type, settings["medium"])
 
-    # ==========================================================
-    # Hybrid logic: big files → PikePDF, small → Ghostscript
-    # ==========================================================
-    if file_size > 4:
-        print("⚡ Using PikePDF fast compression for large file")
-        success = compress_with_pikepdf(input_path, output_path)
-        if not success:
-            print("⚠️ PikePDF failed, falling back to PyMuPDF")
-            compress_with_pymupdf(input_path, output_path, quality=50)
-    else:
-        print("🧩 Using Ghostscript for small/medium file")
-        gs_cmd = [
-            'gs',
-            '-sDEVICE=pdfwrite',
-            '-dCompatibilityLevel=1.4',
-            '-dPDFSETTINGS=/default',
-            '-dNOPAUSE',
-            '-dQUIET',
-            '-dBATCH',
-            '-dDetectDuplicateImages=true',
-            '-dCompressFonts=true',
-            '-dSubsetFonts=true',
-            '-dEmbedAllFonts=true',
-            '-dColorImageDownsampleType=/Bicubic',
-            '-dGrayImageDownsampleType=/Bicubic',
-            '-dMonoImageDownsampleType=/Subsample',
-            '-dDownsampleColorImages=true',
-            '-dDownsampleGrayImages=true',
-            '-dDownsampleMonoImages=true',
-            f'-dColorImageResolution={level["dpi"]}',
-            f'-dGrayImageResolution={level["dpi"]}',
-            f'-dMonoImageResolution={level["dpi"]}',
-            f'-dJPEGQ={level["quality"]}',
-            '-dAutoRotatePages=/None',
-            '-dColorConversionStrategy=/sRGB',
-            f'-sOutputFile={output_path}',
-            input_path
-        ]
-
-        try:
-            subprocess.run(gs_cmd, check=True)
-        except subprocess.CalledProcessError as e:
-            print("❌ Ghostscript failed:", e)
-            compress_with_pymupdf(input_path, output_path, quality=50)
+    # Hybrid logic: large files -> pikepdf, else ghostscript.
+    # Lower threshold to 2 MB to reduce Render CPU/memory issues.
+    try:
+        if file_size_mb > 2.0:
+            print("⚡ Using PikePDF fast compression for large file")
+            ok = compress_with_pikepdf(input_path, output_path)
+            if not ok:
+                print("⚠️ PikePDF failed, falling back to PyMuPDF")
+                ok = compress_with_pymupdf(input_path, output_path, quality=level["quality"])
+            method_used = "pikepdf" if ok else "pymupdf-fallback"
+        else:
+            print("🧩 Using Ghostscript for small/medium file")
+            ok, err = run_ghostscript(
+                input_path,
+                output_path,
+                dpi=level["dpi"],
+                jpeg_quality=level["quality"],
+                timeout_sec=240
+            )
+            method_used = "ghostscript"
+            if not ok:
+                print("⚠️ Ghostscript failed/timeout, trying PyMuPDF fallback")
+                ok = compress_with_pymupdf(input_path, output_path, quality=level["quality"])
+                method_used = "pymupdf-fallback"
+    except Exception as e:
+        print("❌ Unexpected error during compression:", e)
+        return jsonify({"error": "Server error during compression"}), 500
 
     if not os.path.exists(output_path):
+        print("❌ Output missing after compression attempts, returning error.")
+        delete_file_later(input_path)
         return jsonify({"error": "Output file missing"}), 500
 
-    # Compare sizes
-    original_size = os.path.getsize(input_path)
+    # Compare sizes and optionally try alternative if no reduction
+    original_size = file_size_bytes
     compressed_size = os.path.getsize(output_path)
-    saved = 100 - (compressed_size / original_size * 100)
-    print(f"📊 Original: {original_size/1024:.1f} KB → Compressed: {compressed_size/1024:.1f} KB ({saved:.1f}% smaller)")
+    saved_pct = 100 - (compressed_size / original_size * 100)
+    print(f"📊 Method: {method_used} → {original_size/1024:.1f} KB → {compressed_size/1024:.1f} KB ({saved_pct:.1f}% smaller)")
 
+    # If compressed is not smaller, try alternate algorithm before returning original
+    if compressed_size >= original_size:
+        print("⚠️ Compression ineffective, trying alternative method (PyMuPDF)")
+        alt_ok = compress_with_pymupdf(input_path, output_path, quality=50)
+        if alt_ok:
+            compressed_size = os.path.getsize(output_path)
+            saved_pct = 100 - (compressed_size / original_size * 100)
+            print(f"📊 After alt: {original_size/1024:.1f} KB → {compressed_size/1024:.1f} KB ({saved_pct:.1f}% smaller)")
+        else:
+            print("⚠️ Alternative also ineffective, will return original file.")
+
+    # Ensure cleanup scheduled
     delete_file_later(input_path)
     delete_file_later(output_path)
 
+    # If alt failed and compressed is >= original, return original
+    if compressed_size >= original_size:
+        print("🔁 Returning original because compression didn't help.")
+        return send_file(
+            input_path,
+            as_attachment=True,
+            download_name=f"{original_name}_tools_subidha.pdf",
+            mimetype='application/pdf'
+        )
+
+    # Successful compressed output
+    # (You can also return JSON metadata if you want; for now keep same behavior)
     return send_file(
         output_path,
         as_attachment=True,
