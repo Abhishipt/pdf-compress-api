@@ -25,4 +25,5 @@ EXPOSE 5000
 HEALTHCHECK CMD curl --fail http://localhost:5000/ping || exit 1
 
 # Run Gunicorn server
-CMD exec gunicorn --bind 0.0.0.0:5000 --workers 2 --timeout 120 app:app
+CMD exec gunicorn --bind 0.0.0.0:5000 --workers 1 --timeout 300 app:app
+
