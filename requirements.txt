@@ -4,3 +4,4 @@ PyMuPDF
 pikepdf
 gunicorn
 werkzeug
+Pillow
